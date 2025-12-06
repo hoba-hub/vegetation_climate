@@ -43,41 +43,45 @@ class AnalyticsService:
         self.data = df.sort_index()
         return True
 
-    def load_cmip6_csv(self, csv_path_or_buffer, area_id:int, target_year:int,season="summer"):
+    def load_cmip6_csv(self, csv_path_or_buffer, area_id: int, target_year: int, season: str):
+        """
+        Loads CMIP6 CSV and filters by area_id, target_year, and season.
+        Accepts a file-path string or a buffer that pd.read_csv can read.
+        Handles area_id values that might be 'N/A' in the CSV by allowing those rows.
+        """
         df = pd.read_csv(csv_path_or_buffer)
 
-        # Standardize date column
+        # ---- Standardize date column ----
         if 'date' not in df.columns and 'Date' in df.columns:
             df.rename(columns={'Date': 'date'}, inplace=True)
+
         if 'date' not in df.columns:
             raise ValueError("CMIP6 CSV must contain a 'date' column")
 
         df['ds'] = pd.to_datetime(df['date'])
         df['year'] = df['ds'].dt.year
-        #new added
         df['month'] = df['ds'].dt.month
 
-        season_months = {
-            "winter": [12, 1, 2],
-            "spring": [3, 4, 5],
-            "summer": [6, 7, 8],
-            "autumn": [9, 10, 11]
-        }
-
-        selected_months = season_months.get(season.lower(), [6, 7, 8])
-
-
-        # ✅ FILTER BY AREA
+        # FILTER BY AREA (allow "N/A" values)
         if 'area_id' in df.columns:
-            df = df[df['area_id'] == area_id]
+            # Normalize to string for safe comparison (handles numeric or textual 'N/A')
+            df['area_id'] = df['area_id'].astype(str)
+            df = df[df['area_id'].isin([str(area_id), "N/A"])]
         else:
             raise ValueError("CMIP6 CSV must contain 'area_id' column")
 
-        # ✅ FILTER BY YEAR
-        df = df[ (df['year'] == target_year) & (df['month'].isin(selected_months))]
+        # FILTER BY YEAR
+        df = df[df['year'] == target_year]
 
+        # FILTER BY SEASON
+        if 'season' in df.columns:
+            df = df[df['season'].str.lower() == season.lower()]
+        else:
+            # If CSV does not have explicit season, fall back to month-based filtering using SEASON_MONTHS
+            months = SEASON_MONTHS.get(season.lower(), SEASON_MONTHS['summer'])
+            df = df[df['month'].isin(months)]
 
-        # ✅ Keep ONLY needed columns
+        # Keep ONLY needed columns
         keep_cols = ['ds']
         for c in ['Temperature', 'Precipitation', 'Pressure']:
             if c in df.columns:
@@ -86,7 +90,7 @@ class AnalyticsService:
         return df[keep_cols].sort_values('ds').reset_index(drop=True)
 
 
-        # ---------- helpers ----------
+# ---------- helpers ----------
     def _save_figure_to_base64(self):
         img = io.BytesIO()
         plt.tight_layout()
@@ -142,14 +146,19 @@ class AnalyticsService:
         return self._save_figure_to_base64()
 
     def generate_climate_distribution_plots(self, df=None):
+        """
+        Generate histogram+KDE plots for available climate vars.
+        Safe: only plots variables that exist and have data.
+        """
         if df is None:
             df = self.data
         if df is None:
             return {}
         plots = {}
-        climate_vars = ['Temperature', 'Wind_Speed', 'Pressure', 'Precipitation']
+        # Only plot climate variables that are relevant in CMIP6 (and present in df)
+        climate_vars = ['Temperature', 'Pressure', 'Precipitation', 'Wind_Speed']
         for var in climate_vars:
-            if var in df.columns:
+            if var in df.columns and df[var].dropna().shape[0] > 0:
                 plt.figure(figsize=(8,5))
                 sns.histplot(df[var].dropna(), kde=True, bins=20)
                 plt.title(f"{var} Distribution (Histogram + KDE)")
@@ -211,8 +220,9 @@ class AnalyticsService:
         response['plot_image_base64'] = self.generate_ndvi_time_series_plot(df=df_year, future_df=None)
         response['raw_records'] = df_period.reset_index().to_dict(orient='records')
         return response
-                                                                                                                         #new added
-    def perform_full_analysis_future( self,historical_gee_data_list,cmip6_csv_buffer_or_path,area_id:int, target_year:int,season="summer",forecast_years=5,freq='M'):
+
+    #new added
+    def perform_full_analysis_future(self, historical_gee_data_list, cmip6_csv_buffer_or_path, area_id:int, target_year:int, season="summer", forecast_years=5, freq='M'):
 
         self.load_from_gee_list(historical_gee_data_list)
         if 'NDVI' not in self.data.columns or len(self.data) < 12:
@@ -225,28 +235,44 @@ class AnalyticsService:
         periods = forecast_years * 12 if freq == 'M' else forecast_years
         future = m.make_future_dataframe(periods=periods, freq=freq)
         forecast = m.predict(future)
-                                                                                                        #new added          
-        cmip6_df = self.load_cmip6_csv(cmip6_csv_buffer_or_path,area_id=area_id,target_year=target_year,season=season)
+
+        # load CMIP6 (filtered by area, year, season)
+        cmip6_df = self.load_cmip6_csv(cmip6_csv_buffer_or_path, area_id=area_id, target_year=target_year, season=season)
+
         # Align monthly timestamps
         cmip6_df['ds'] = pd.to_datetime(cmip6_df['ds']).dt.to_period('M').dt.to_timestamp()
         forecast['ds'] = pd.to_datetime(forecast['ds']).dt.to_period('M').dt.to_timestamp()
 
-
         last_hist = df_prophet['ds'].max()
         future_forecast = forecast[(forecast['ds'] > last_hist) & (forecast['ds'].dt.year == target_year)].copy()
 
+        # safety check: ensure we actually have forecasted months for that year
+        if future_forecast.empty:
+            return {"error": f"No forecast data available for year {target_year}. Increase forecast_years or check training data."}
 
         merged = pd.merge(future_forecast[['ds','yhat','yhat_lower','yhat_upper']], cmip6_df, on='ds', how='left')
 
+        # compute mean summary (safe: handle empty / NaN)
         summary_future = {}
-        if 'yhat' in merged.columns:
+        if 'yhat' in merged.columns and merged['yhat'].notna().any():
             summary_future['ndvi_mean'] = float(merged['yhat'].mean())
-        if 'Temperature' in merged.columns:
+        else:
+            summary_future['ndvi_mean'] = None
+
+        if 'Temperature' in merged.columns and merged['Temperature'].notna().any():
             summary_future['temperature_mean'] = float(merged['Temperature'].mean())
-        if 'Pressure' in merged.columns:
+        else:
+            summary_future['temperature_mean'] = None
+
+        if 'Pressure' in merged.columns and merged['Pressure'].notna().any():
             summary_future['pressure_mean'] = float(merged['Pressure'].mean())
-        if 'Precipitation' in merged.columns:
+        else:
+            summary_future['pressure_mean'] = None
+
+        if 'Precipitation' in merged.columns and merged['Precipitation'].notna().any():
             summary_future['precipitation_mean'] = float(merged['Precipitation'].mean())
+        else:
+            summary_future['precipitation_mean'] = None
 
         response = {}
         response['data_values'] = summary_future
