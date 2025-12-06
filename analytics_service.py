@@ -62,7 +62,7 @@ class AnalyticsService:
         df['year'] = df['ds'].dt.year
         df['month'] = df['ds'].dt.month
 
-        # FILTER BY AREA (allow "N/A" values)
+        # ✅ FILTER BY AREA (allow "N/A" values)
         if 'area_id' in df.columns:
             # Normalize to string for safe comparison (handles numeric or textual 'N/A')
             df['area_id'] = df['area_id'].astype(str)
@@ -70,10 +70,10 @@ class AnalyticsService:
         else:
             raise ValueError("CMIP6 CSV must contain 'area_id' column")
 
-        # FILTER BY YEAR
+        # ✅ FILTER BY YEAR
         df = df[df['year'] == target_year]
 
-        # FILTER BY SEASON
+        # ✅ FILTER BY SEASON
         if 'season' in df.columns:
             df = df[df['season'].str.lower() == season.lower()]
         else:
@@ -81,7 +81,7 @@ class AnalyticsService:
             months = SEASON_MONTHS.get(season.lower(), SEASON_MONTHS['summer'])
             df = df[df['month'].isin(months)]
 
-        # Keep ONLY needed columns
+        # ✅ Keep ONLY needed columns
         keep_cols = ['ds']
         for c in ['Temperature', 'Precipitation', 'Pressure']:
             if c in df.columns:
