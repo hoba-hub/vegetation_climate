@@ -11,9 +11,9 @@ def future_analysis():
     """
     Expect multipart/form-data:
       - 'historical_gee_json' : file (JSON) or form field (string JSON)
-      - 'cmip6_csv' : file upload (CSV)
       - 'area_id' : integer
       - 'year' : integer (future year)
+      - 'season' : string (optional: winter, spring, summer, autumn)
     """
 
     # ---- Read historical GEE JSON ----
@@ -28,21 +28,26 @@ def future_analysis():
             hist_list = pd.read_json(hist_text).to_dict(orient='records')
 
     if hist_list is None:
-        return jsonify({"error":"historical_gee_json is required"}), 400
+        return jsonify({"error": "historical_gee_json is required"}), 400
 
-    # ---- Read CMIP6 CSV ---- 
+    # ---- Use FIXED CSV PATH ----
     cmip6_buffer = "data/cmip6.csv"
 
-
-    # ---- Read area_id & year from FORM ----
+    # ---- Read FORM values ----
     area_id = request.form.get("area_id")
     target_year = request.form.get("year")
+
+    # ✅ NEW: Read season safely
+    season = request.form.get("season", "summer")   # default = summer
 
     if not area_id or not target_year:
         return jsonify({"error": "area_id and year are required"}), 400
 
-    area_id = int(area_id)
-    target_year = int(target_year)
+    try:
+        area_id = int(area_id)
+        target_year = int(target_year)
+    except:
+        return jsonify({"error": "area_id and year must be integers"}), 400
 
     # ---- Run Analysis ----
     try:
@@ -50,7 +55,8 @@ def future_analysis():
             historical_gee_data_list=hist_list,
             cmip6_csv_buffer_or_path=cmip6_buffer,
             area_id=area_id,
-            target_year=target_year
+            target_year=target_year,
+            season=season   # ✅ NOW THIS IS DEFINED
         )
 
         return jsonify(result)
