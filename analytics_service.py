@@ -43,7 +43,7 @@ class AnalyticsService:
         self.data = df.sort_index()
         return True
 
-    def load_cmip6_csv(self, csv_path_or_buffer, area_id:int, target_year:int):
+    def load_cmip6_csv(self, csv_path_or_buffer, area_id:int, target_year:int,season="summer"):
         df = pd.read_csv(csv_path_or_buffer)
 
         # Standardize date column
@@ -54,6 +54,18 @@ class AnalyticsService:
 
         df['ds'] = pd.to_datetime(df['date'])
         df['year'] = df['ds'].dt.year
+        #new added
+        df['month'] = df['ds'].dt.month
+
+        season_months = {
+            "winter": [12, 1, 2],
+            "spring": [3, 4, 5],
+            "summer": [6, 7, 8],
+            "autumn": [9, 10, 11]
+        }
+
+        selected_months = season_months.get(season.lower(), [6, 7, 8])
+
 
         # ✅ FILTER BY AREA
         if 'area_id' in df.columns:
@@ -62,7 +74,8 @@ class AnalyticsService:
             raise ValueError("CMIP6 CSV must contain 'area_id' column")
 
         # ✅ FILTER BY YEAR
-        df = df[df['year'] == target_year]
+        df = df[ (df['year'] == target_year) & (df['month'].isin(selected_months))]
+
 
         # ✅ Keep ONLY needed columns
         keep_cols = ['ds']
@@ -198,8 +211,8 @@ class AnalyticsService:
         response['plot_image_base64'] = self.generate_ndvi_time_series_plot(df=df_year, future_df=None)
         response['raw_records'] = df_period.reset_index().to_dict(orient='records')
         return response
-
-    def perform_full_analysis_future( self,historical_gee_data_list,cmip6_csv_buffer_or_path,area_id:int, target_year:int,forecast_years=5,freq='M'):
+                                                                                                                         #new added
+    def perform_full_analysis_future( self,historical_gee_data_list,cmip6_csv_buffer_or_path,area_id:int, target_year:int,season="summer",forecast_years=5,freq='M'):
 
         self.load_from_gee_list(historical_gee_data_list)
         if 'NDVI' not in self.data.columns or len(self.data) < 12:
@@ -212,8 +225,8 @@ class AnalyticsService:
         periods = forecast_years * 12 if freq == 'M' else forecast_years
         future = m.make_future_dataframe(periods=periods, freq=freq)
         forecast = m.predict(future)
-
-        cmip6_df = self.load_cmip6_csv(cmip6_csv_buffer_or_path,area_id=area_id,target_year=target_year)
+                                                                                                        #new added          
+        cmip6_df = self.load_cmip6_csv(cmip6_csv_buffer_or_path,area_id=area_id,target_year=target_year,season=season)
         # Align monthly timestamps
         cmip6_df['ds'] = pd.to_datetime(cmip6_df['ds']).dt.to_period('M').dt.to_timestamp()
         forecast['ds'] = pd.to_datetime(forecast['ds']).dt.to_period('M').dt.to_timestamp()
@@ -225,7 +238,18 @@ class AnalyticsService:
 
         merged = pd.merge(future_forecast[['ds','yhat','yhat_lower','yhat_upper']], cmip6_df, on='ds', how='left')
 
+        summary_future = {}
+        if 'yhat' in merged.columns:
+            summary_future['ndvi_mean'] = float(merged['yhat'].mean())
+        if 'Temperature' in merged.columns:
+            summary_future['temperature_mean'] = float(merged['Temperature'].mean())
+        if 'Pressure' in merged.columns:
+            summary_future['pressure_mean'] = float(merged['Pressure'].mean())
+        if 'Precipitation' in merged.columns:
+            summary_future['precipitation_mean'] = float(merged['Precipitation'].mean())
+
         response = {}
+        response['data_values'] = summary_future
         response['forecast'] = merged.to_dict(orient='records')
         plot_future_df = merged[['ds','yhat']].copy()
         response['plot_image_base64'] = self.generate_ndvi_time_series_plot(df=self.data, future_df=plot_future_df)
