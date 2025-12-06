@@ -37,8 +37,8 @@ def future_analysis():
     area_id = request.form.get("area_id")
     target_year = request.form.get("year")
 
-    # ✅ NEW: Read season safely
-    season = request.form.get("season", "summer")   # default = summer
+    # ---- Read season safely (default = summer) ----
+    season = request.form.get("season", "summer")
 
     if not area_id or not target_year:
         return jsonify({"error": "area_id and year are required"}), 400
@@ -56,7 +56,7 @@ def future_analysis():
             cmip6_csv_buffer_or_path=cmip6_buffer,
             area_id=area_id,
             target_year=target_year,
-            season=season   # ✅ NOW THIS IS DEFINED
+            season=season
         )
 
         return jsonify(result)
